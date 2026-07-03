@@ -186,6 +186,22 @@ export class BoardScene {
       this.board.add(token);
       this.numberMeshes.set(hex.index, token);
     }
+    // A little 3D cactus on the desert.
+    if (hex.type === RESOURCE.DESERT) {
+      const cactus = this._makeCactus();
+      cactus.position.set(x + 0.15, TILE_TOP, z + 0.1);
+      this.board.add(cactus);
+    }
+  }
+
+  _makeCactus() {
+    const g = new THREE.Group();
+    const mat = new THREE.MeshStandardMaterial({ color: 0x3f7d3a, roughness: 0.75 });
+    const trunk = new THREE.Mesh(new THREE.CapsuleGeometry(0.06, 0.34, 4, 8), mat); trunk.position.y = 0.24; trunk.castShadow = true;
+    const armL = new THREE.Mesh(new THREE.CapsuleGeometry(0.04, 0.16, 4, 8), mat); armL.position.set(-0.11, 0.28, 0); armL.rotation.z = Math.PI / 3; armL.castShadow = true;
+    const armR = new THREE.Mesh(new THREE.CapsuleGeometry(0.04, 0.14, 4, 8), mat); armR.position.set(0.1, 0.32, 0); armR.rotation.z = -Math.PI / 3; armR.castShadow = true;
+    g.add(trunk, armL, armR);
+    return g;
   }
 
   _makeNumberToken(n) {
@@ -208,19 +224,30 @@ export class BoardScene {
   }
 
   _addPort(port) {
-    // Simple dock marker: a small post at the port edge, pushed slightly outward.
+    // A small wooden dock: a plank walkway reaching from the shore outward + two posts.
     const { u, v } = edgePos(port.x, port.y, port.z);
     const [x, z] = this._toWorld(u, v);
-    const out = 1.28; // push outward from center
     const len = Math.hypot(x, z) || 1;
-    const px = (x / len) * (len * out), pz = (z / len) * (len * out);
-    const post = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.05, 0.06, 0.5, 12),
-      new THREE.MeshStandardMaterial({ color: 0x7a5230, roughness: 0.9 })
-    );
-    post.position.set(px, 0.2, pz);
-    post.castShadow = true;
-    this.board.add(post);
+    const nx = x / len, nz = z / len;              // outward direction
+    const inX = x + nx * 0.15, inZ = z + nz * 0.15; // near the tile edge
+    const outX = x + nx * 0.9, outZ = z + nz * 0.9; // over the water
+    const wood = new THREE.MeshStandardMaterial({ color: 0x8a5f34, roughness: 0.85 });
+
+    const g = new THREE.Group();
+    // plank
+    const plankLen = Math.hypot(outX - inX, outZ - inZ);
+    const plank = new THREE.Mesh(new THREE.BoxGeometry(plankLen, 0.06, 0.18), wood);
+    plank.position.set((inX + outX) / 2, TILE_TOP - 0.06, (inZ + outZ) / 2);
+    plank.rotation.y = -Math.atan2(outZ - inZ, outX - inX);
+    plank.castShadow = true; plank.receiveShadow = true;
+    g.add(plank);
+    // two posts at the outer end
+    for (const s of [-0.09, 0.09]) {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.035, 0.5, 10), wood);
+      post.position.set(outX - nz * s, TILE_TOP - 0.2, outZ + nx * s);
+      post.castShadow = true; g.add(post);
+    }
+    this.board.add(g);
   }
 
   // -------------------- pieces (settlements / cities / roads / robber) --------------------

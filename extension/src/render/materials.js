@@ -68,9 +68,11 @@ function drawResourceTexture(type) {
     }
     g.globalAlpha = 1;
   } else if (type === RESOURCE.DESERT) {
-    // dunes + a cactus
-    for (let i = 0; i < 6; i++) { g.globalAlpha = 0.1; g.strokeStyle = "#b89a5e"; g.lineWidth = 6; g.beginPath(); g.moveTo(0, 40 * i + rand() * 20); g.bezierCurveTo(TEX / 3, 40 * i - 10, 2 * TEX / 3, 40 * i + 20, TEX, 40 * i); g.stroke(); }
-    g.globalAlpha = 1; g.fillStyle = "#3f7d3a"; g.fillRect(TEX / 2 - 4, TEX / 2 - 20, 8, 34); g.fillRect(TEX / 2 - 16, TEX / 2 - 6, 12, 6); g.fillRect(TEX / 2 + 4, TEX / 2 - 12, 12, 6);
+    // wind-blown dune ripples + scattered pebbles (the cactus is a real 3D mesh, added in scene)
+    for (let i = 0; i < 9; i++) { g.globalAlpha = 0.12; g.strokeStyle = "#c2a765"; g.lineWidth = 4 + rand() * 3; g.beginPath(); g.moveTo(0, 28 * i + rand() * 16); g.bezierCurveTo(TEX / 3, 28 * i - 12, 2 * TEX / 3, 28 * i + 18, TEX, 28 * i); g.stroke(); }
+    g.globalAlpha = 1;
+    for (let i = 0; i < 30; i++) { g.globalAlpha = 0.25 + rand() * 0.2; g.fillStyle = rand() > 0.5 ? "#a88b4f" : "#e6d3a0"; g.beginPath(); g.arc(rand() * TEX, rand() * TEX, 1 + rand() * 2, 0, 7); g.fill(); }
+    g.globalAlpha = 1;
   }
   return c;
 }
