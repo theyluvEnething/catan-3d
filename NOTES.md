@@ -297,6 +297,16 @@ gameLogState.<n+1> = { text:{type:44} }                          // 44 = end-of-
   [counter ✏️][decline ✕][accept ✓].
 - `gameLogState text.type`: 4 = placed piece, 44 = end-turn, 43 = trade executed.
 
+### In-game UI element ids/classes — ✅ VERIFIED (live DOM dump, harness/dump-game-buttons.js)
+Colonist's action tray (bottom-center) buttons:
+- `#action-button-buy-dev-card` (class `buyDevelopmentCardButton-*`) — BUY development card
+- `#action-button-trade` (class `tradeButton-*`) — open trade
+- `#action-button-build-city` (class `cityButton-*`), `settlementButton-*`, `roadButton-*` — builds
+- `#action-button-pass-turn` (class `turnButton-*`) — end turn; `#roll-dice-button` — roll
+- Your hand cards: `.cardContainer-* .clickable-*` (draggable/clickable). Dev cards in right panel: `.cardStackContainer-*` with txt = dev id (10/15/12/…).
+Buy-dev action id probe: NOT in {12,13,14,20-27,44-48} (all sent ok but never grew the dev deck). Capture via a TRUSTED click on `#action-button-buy-dev-card` + read window.__catan3d.outActions (harness/probe-buydev.js).
+GOTCHA: the `.colonist-profile` gets LOCKED by lingering Playwright chrome.exe (kill via `Get-CimInstance Win32_Process | ? CommandLine -like '*colonist-profile*' | Stop-Process -Force` + rm SingletonLock) — a locked profile makes every launch reuse a stuck session (silent flakiness). ALWAYS kill+clear before a run, and run ONE at a time.
+
 ### type-91 diff + gameLog vocabulary — ✅ VERIFIED (half-game human capture, debug/hud/, 2026-07-04)
 **Dev cards** — `mechanicDevelopmentCardsState`:
 ```
