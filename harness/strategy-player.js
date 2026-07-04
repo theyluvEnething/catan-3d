@@ -1,0 +1,173 @@
+// Strategy auto-player: plays a full Colonist bot game through OUR interaction layer
+// (direct-send) toward a 10-VP win. Heuristic core + DeepSeek fallback for ambiguous spot
+// choices. Self-discovers the city action id on the first affordable city.
+//
+//   node harness/strategy-player.js [cloneIndex]
+//
+// Resource enum (verified): WOOD=1 BRICK=2 SHEEP=3 WHEAT=4 ORE=5.
+// Costs: road{1,2}  settlement{1,2,3,4}  city{4:2,5:3}  devcard{3,4,5}.
+import { launchClone } from "./parallel.js";
+import { checkLogin, SHOTS_DIR } from "./launch.js";
+import { startBotGame, dismissConsent } from "./start-game.js";
+import { chooseOption, deepseekAvailable } from "./deepseek.js";
+import path from "node:path";
+
+const clone = Number(process.argv[2] ?? 60);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const T0 = Date.now();
+const log = (...a) => console.log(`[${((Date.now() - T0) / 1000).toFixed(0)}s]`, ...a);
+
+const WOOD = 1, BRICK = 2, SHEEP = 3, WHEAT = 4, ORE = 5;
+const COST = { road: { [WOOD]: 1, [BRICK]: 1 }, settlement: { [WOOD]: 1, [BRICK]: 1, [SHEEP]: 1, [WHEAT]: 1 }, city: { [WHEAT]: 2, [ORE]: 3 }, dev: { [SHEEP]: 1, [WHEAT]: 1, [ORE]: 1 } };
+// city action id: try candidates until one upgrades a settlement, then lock it.
+const CITY_CANDS = [28, 47, 27, 17, 12, 16];
+let CITY_ACTION = null;
+const DEV_CANDS = [21, 24, 22, 46];
+let DEV_ACTION = null;
+const ROBBER_ACTION = 3; // captured candidate; falls back to trusted click if it fails
+
+const { ctx } = await launchClone(clone);
+const page = ctx.pages()[0] || (await ctx.newPage());
+const { loggedIn } = await checkLogin(page);
+if (!loggedIn) { console.log("STRAT not logged in"); await ctx.close(); process.exit(2); }
+await dismissConsent(page);
+await startBotGame(page, {});
+await sleep(4500);
+for (let w = 0; w < 40 && !(await page.$("#game-canvas")); w++) await sleep(1000);
+const canvas = await page.$("#game-canvas");
+if (!canvas) { console.log("STRAT no canvas"); await ctx.close(); process.exit(1); }
+const box = await canvas.boundingBox();
+const cx = box.x + box.width / 2, cy = box.y + box.height / 2, R = Math.min(box.width, box.height) * 0.42;
+
+// ---- state readers ----
+const core = () => page.evaluate(() => { const s = window.__catan3d.state; const ps = s.playerState(s.us) || {}; const vp = ps.victoryPointsState ? Object.values(ps.victoryPointsState).reduce((a, x) => a + (typeof x === "number" ? x : 0), 0) : 0; return { us: s.us, turn: s.currentTurnColor, completed: s.completedTurns, robber: s.robberTileIndex, hand: (ps.resourceCards && ps.resourceCards.cards) || {}, vp, ratios: ps.bankTradeRatiosState || {} }; });
+const allVP = () => page.evaluate(() => { const s = window.__catan3d.snapshot(); return s.players.map((p) => `${p.color}:${p.vp}`).join(" "); });
+const prompt = () => page.evaluate(() => { const el = document.querySelector("[class*=messageContainer]"); return el ? (el.innerText || "").trim().toLowerCase() : ""; });
+const pieceCounts = () => page.evaluate(() => { const s = window.__catan3d.state, ms = s.gameState.mapState, us = s.us; return { settlements: Object.values(ms.tileCornerStates).filter((c) => c.owner === us && c.buildingType !== 2).length, cities: Object.values(ms.tileCornerStates).filter((c) => c.owner === us && c.buildingType === 2).length, roads: Object.values(ms.tileEdgeStates).filter((e) => e.owner === us).length }; });
+
+function canAfford(hand, cost) { return Object.entries(cost).every(([res, n]) => (hand[res] || 0) >= n); }
+
+// Production value of a corner = sum over adjacent hexes of dice-probability (dots). Uses the
+// state's hex dice numbers; pips(n) = 6 - |7 - n|.
+async function bestSettlementCorner(setup) {
+  return page.evaluate((setup) => {
+    const s = window.__catan3d.state, ms = s.gameState.mapState;
+    const L = window.__catan3d.legalSettlements({ setup });
+    if (!L.length) return null;
+    const hexByKey = {}; for (const h of Object.values(ms.tileHexStates)) hexByKey[h.x + "," + h.y] = h;
+    const pips = (n) => (n ? 6 - Math.abs(7 - n) : 0);
+    // corner -> adjacent hexes via the same rule the renderer uses
+    const cornerHexes = (x, y, z) => { const out = [{ x, y }]; if (z === 0) out.push({ x, y: y - 1 }, { x: x + 1, y: y - 1 }); else out.push({ x: x - 1, y: y + 1 }, { x, y: y + 1 }); return out; };
+    let scored = L.map((c) => { let v = 0; const res = new Set(); for (const h of cornerHexes(c.x, c.y, c.z)) { const hx = hexByKey[h.x + "," + h.y]; if (hx) { v += pips(hx.diceNumber); if (hx.type) res.add(hx.type); } } return { i: c.i, v, diversity: res.size }; });
+    scored.sort((a, b) => (b.v + b.diversity) - (a.v + a.diversity));
+    return scored.slice(0, 4); // top few for optional LLM tiebreak
+  }, setup);
+}
+
+let lastCorner = null;
+async function doSettlement(setup) {
+  const top = await bestSettlementCorner(setup);
+  if (!top || !top.length) return false;
+  let choiceI = top[0].i;
+  if (top.length > 1 && deepseekAvailable() && Math.abs(top[0].v - top[1].v) <= 1) {
+    const c = await core();
+    choiceI = await chooseOption(`Catan setup=${setup}. Pick the best settlement spot (production pips + resource diversity). My VP=${c.vp}.`, top.map((t) => ({ id: t.i, desc: `corner ${t.i}: pips ${t.v}, ${t.diversity} resources` })));
+  }
+  const before = await pieceCounts();
+  const coord = await page.evaluate((i) => { const r = window.__catan3d.buildSettlement(i); return r && r.ok ? window.__catan3d.state.gameState.mapState.tileCornerStates[i] : null; }, choiceI);
+  await sleep(1200);
+  const after = await pieceCounts();
+  if (after.settlements + after.cities > before.settlements + before.cities) { lastCorner = coord; return true; }
+  return false;
+}
+async function doRoad(setup) {
+  const before = (await pieceCounts()).roads;
+  await page.evaluate(({ setup, fc }) => { const L = window.__catan3d.legalRoads({ setup, fromCorner: fc }); if (L.length) window.__catan3d.buildRoad(L[0].i); }, { setup, fc: lastCorner });
+  await sleep(1200);
+  return (await pieceCounts()).roads > before;
+}
+async function doCity() {
+  const cityCorner = await page.evaluate(() => { const L = window.__catan3d.legalCities(); return L.length ? L[0].i : null; });
+  if (cityCorner == null) return false;
+  const cands = CITY_ACTION ? [CITY_ACTION] : CITY_CANDS;
+  for (const cand of cands) {
+    const before = await page.evaluate((i) => window.__catan3d.state.gameState.mapState.tileCornerStates[i].buildingType, cityCorner);
+    await page.evaluate(({ cand, i }) => window.__catan3d.sendGameAction(cand, i), { cand, i: cityCorner });
+    await sleep(1000);
+    const after = await page.evaluate((i) => window.__catan3d.state.gameState.mapState.tileCornerStates[i].buildingType, cityCorner);
+    if (after === 2 && before !== 2) { if (!CITY_ACTION) { CITY_ACTION = cand; log("DISCOVERED city action =", cand); } return true; }
+  }
+  return false;
+}
+
+const rep = { setupSettlements: 0, setupRoads: 0, cities: 0, settlements: 0, roads: 0, devs: 0, rolls: 0, robbers: 0, discards: 0, desyncs: 0, cityAction: null, over: false, maxVP: 0 };
+
+async function moveRobber() {
+  const before = (await core()).robber;
+  // best hex = an opponent's highest-pip hex not ours; simple: pick legal hex with most pips
+  const hex = await page.evaluate(() => { const s = window.__catan3d.state, ms = s.gameState.mapState; const L = window.__catan3d.legalRobberHexes(); if (!L.length) return null; const pips = (n) => (n ? 6 - Math.abs(7 - n) : 0); L.sort((a, b) => pips(b.diceNumber) - pips(a.diceNumber)); return L[0].i; });
+  if (hex == null) return;
+  await page.evaluate(({ a, hex }) => window.__catan3d.sendGameAction(a, hex), { a: ROBBER_ACTION, hex });
+  await sleep(1100);
+  if ((await core()).robber === before) { // fallback trusted click scan
+    outer: for (let ring = 0.12; ring <= 1; ring += 0.09) for (let i = 0; i < 14; i++) { const a = (i / 14) * Math.PI * 2; await page.mouse.click(cx + Math.cos(a) * R * ring, cy + Math.sin(a) * R * ring); await sleep(150); if ((await core()).robber !== before) break outer; }
+  }
+  if ((await core()).robber !== before) rep.robbers++;
+  // steal picker: click near robber
+  await sleep(500); for (let i = 0; i < 8; i++) { await page.mouse.click(cx + Math.cos(i) * R * 0.14, cy + Math.sin(i) * R * 0.14); await sleep(150); if (!/steal|select a player/.test(await prompt())) break; }
+}
+async function discard() {
+  // discard lowest-value: send action 2 (payload true) per card over the limit. Colonist prompts
+  // for the exact selection UI; the toggle approach discards from the front — acceptable.
+  const c = await core(); const total = Object.values(c.hand).reduce((a, x) => a + x, 0); const drop = Math.floor(total / 2);
+  for (let k = 0; k < drop; k++) { await page.evaluate(() => window.__catan3d.sendGameAction(2, true)); await sleep(250); }
+  await page.keyboard.press("Enter"); await sleep(600); rep.discards++;
+}
+
+const MAX_MS = 22 * 60 * 1000;
+let idle = 0;
+while (Date.now() - T0 < MAX_MS) {
+  const c = await core(); const p = await prompt();
+  rep.maxVP = Math.max(rep.maxVP, c.vp);
+  if (/you win|has won|game over|victory|you lose/i.test(p)) { rep.over = true; break; }
+  const mine = c.turn === c.us;
+
+  if (c.completed < 8) {
+    if (mine && /place settlement/.test(p)) { (await doSettlement(true)) ? rep.setupSettlements++ : rep.desyncs++; }
+    else if (mine && /place road/.test(p)) { (await doRoad(true)) ? rep.setupRoads++ : rep.desyncs++; }
+    else await sleep(800);
+    continue;
+  }
+
+  if (!mine) {
+    // still handle discard on a 7 even when not our turn
+    if (/discard/.test(p)) await discard();
+    else { await sleep(800); idle++; if (idle > 200) break; }
+    continue;
+  }
+  idle = 0;
+
+  if (/roll/.test(p)) { await page.keyboard.press("Space"); rep.rolls++; await sleep(1500); continue; }
+  if (/move.*robber|place.*robber/.test(p)) { await moveRobber(); await sleep(500); continue; }
+  if (/discard/.test(p)) { await discard(); continue; }
+
+  // BUILD PHASE — priority: city > settlement > devcard > road.
+  const hand = c.hand;
+  let acted = false;
+  if (canAfford(hand, COST.city)) { if (await doCity()) { rep.cities++; acted = true; log("built CITY, VP", (await core()).vp); } }
+  if (!acted && canAfford(hand, COST.settlement)) { if (await doSettlement(false)) { rep.settlements++; acted = true; log("built settlement"); } }
+  if (!acted && canAfford(hand, COST.dev)) { const cands = DEV_ACTION ? [DEV_ACTION] : DEV_CANDS; for (const cand of cands) { const bv = await page.evaluate(() => { try { const s = window.__catan3d.state, ps = s.playerState(s.us); const d = ps.developmentCards || {}; return Object.values(d).reduce((a, x) => a + (typeof x === "number" ? x : 0), 0); } catch { return 0; } }); await page.evaluate((cand) => window.__catan3d.sendGameAction(cand, true), cand); await sleep(900); const av = await page.evaluate(() => { try { const s = window.__catan3d.state, ps = s.playerState(s.us); const d = ps.developmentCards || {}; return Object.values(d).reduce((a, x) => a + (typeof x === "number" ? x : 0), 0); } catch { return 0; } }); if (av > bv) { if (!DEV_ACTION) { DEV_ACTION = cand; log("DISCOVERED dev action =", cand); } rep.devs++; acted = true; break; } } }
+  if (!acted && canAfford(hand, COST.road)) { if (await doRoad(false)) { rep.roads++; acted = true; } }
+
+  // end turn
+  await page.keyboard.press("Space"); await sleep(1000);
+  if (rep.rolls % 8 === 0) log("progress: VPs", await allVP(), "| built", JSON.stringify({ c: rep.cities, s: rep.settlements, d: rep.devs, r: rep.roads }));
+}
+
+rep.cityAction = CITY_ACTION; rep.devAction = DEV_ACTION;
+rep.finalVPs = await allVP();
+rep.finalPieces = await pieceCounts();
+console.log("STRATEGY_RESULT " + JSON.stringify(rep));
+try { await page.screenshot({ path: path.join(SHOTS_DIR, "strategy-final.png") }); } catch {}
+try { await ctx.close(); } catch {}
+process.exit(0);
