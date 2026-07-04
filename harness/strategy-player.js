@@ -16,6 +16,8 @@ const clone = Number(process.argv[2] ?? 60);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const T0 = Date.now();
 const log = (...a) => console.log(`[${((Date.now() - T0) / 1000).toFixed(0)}s]`, ...a);
+// Race every page op against a timeout so a slow/blocked call surfaces instead of hanging.
+const to = (pr, ms, l) => Promise.race([pr, new Promise((_, r) => setTimeout(() => r(new Error("TIMEOUT " + (l || ""))), ms))]);
 
 const WOOD = 1, BRICK = 2, SHEEP = 3, WHEAT = 4, ORE = 5;
 const COST = { road: { [WOOD]: 1, [BRICK]: 1 }, settlement: { [WOOD]: 1, [BRICK]: 1, [SHEEP]: 1, [WHEAT]: 1 }, city: { [WHEAT]: 2, [ORE]: 3 }, dev: { [SHEEP]: 1, [WHEAT]: 1, [ORE]: 1 } };
@@ -138,10 +140,12 @@ async function discard() {
 const MAX_MS = 22 * 60 * 1000;
 let idle = 0;
 let iter = 0; let lastBeat = 0;
-try {
 while (Date.now() - T0 < MAX_MS) {
   iter++;
-  const c = await core(); const p = await prompt();
+  let c, p;
+  try { c = await to(core(), 10000, "core"); p = await to(prompt(), 10000, "prompt"); }
+  catch (e) { log("read timeout, skipping iter", e.message); await sleep(500); continue; }
+  try {
   if (Date.now() - lastBeat > 8000) { lastBeat = Date.now(); log(`beat iter=${iter} completed=${c.completed} turn=${c.turn} us=${c.us} mine=${c.turn === c.us} vp=${c.vp} prompt="${p.slice(0, 28)}"`); }
   rep.maxVP = Math.max(rep.maxVP, c.vp);
   if (/you win|has won|game over|victory|you lose/i.test(p)) { rep.over = true; break; }
@@ -189,8 +193,8 @@ while (Date.now() - T0 < MAX_MS) {
   await endTurn();
   if ((await core()).completed === before) { await page.keyboard.press("Space"); await sleep(1000); }
   if (rep.rolls % 6 === 0) log("progress: VPs", await allVP(), "| built", JSON.stringify({ c: rep.cities, s: rep.settlements, d: rep.devs, r: rep.roads }));
+  } catch (e) { log("iter error (continuing)", e && e.message || String(e)); await sleep(500); }
 }
-} catch (e) { log("LOOP_ERROR", e && e.message || String(e)); }
 
 rep.cityAction = CITY_ACTION; rep.devAction = DEV_ACTION;
 rep.finalVPs = await allVP();
