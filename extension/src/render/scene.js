@@ -388,6 +388,33 @@ export class BoardScene {
     this.renderer.setSize(w, h);
   }
 
+  // ---- Runtime controls (driven by the popup settings) --------------------------------------
+
+  /** Overall canvas opacity 0..1 (lets the real board / page show through when < 1). */
+  setOpacity(o) {
+    const v = Math.max(0, Math.min(1, +o));
+    this.renderer.domElement.style.opacity = String(v);
+  }
+
+  /** Slowly orbit the camera when true (OrbitControls native auto-rotate). */
+  setAutoRotate(on) {
+    this.controls.autoRotate = !!on;
+    this.controls.autoRotateSpeed = 0.6;
+  }
+
+  /** Transparent background lets the page/sea behind show through around the island. */
+  setBackgroundTransparent(transparent) {
+    this.scene.background = transparent ? null : new THREE.Color(0x8fc3ea);
+    this.renderer.setClearColor(0x000000, transparent ? 0 : 1);
+  }
+
+  /** Return the camera to its pleasant default framing. */
+  resetCamera() {
+    this.camera.position.set(0, 11, 12);
+    this.controls.target.set(0, 0, 0);
+    this.controls.update();
+  }
+
   _animate() {
     this._raf = requestAnimationFrame(this._animate);
     this.controls.update();
