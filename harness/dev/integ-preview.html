@@ -43,14 +43,17 @@
   hud.setTimer(248);
 
   // Expose for the shot script to drive a billboard.
+  window.__confirmCount = 0;
   window.__demo = {
+    bb, fwd, scene,
     showBillboard: async () => {
       // place a settlement billboard over an arbitrary corner in world space
       const { cornerPosExact } = await import(B + "src/render/boardGeometry.js");
-      // pick corner 0's world pos
       const corners = gs.corners; const c = corners[10] || corners[0];
       const p = cornerPosExact ? cornerPosExact(c.x, c.y, c.z) : { u: 0, v: 0 };
-      await bb.show({ x: p.u ?? p.x ?? 0, y: 0.7, z: p.v ?? p.z ?? 0 }, "settlement", 1, ()=>{}, ()=>{});
+      await bb.show({ x: p.u ?? p.x ?? 0, y: 0.7, z: p.v ?? p.z ?? 0 }, "settlement", 1,
+        () => { window.__confirmCount++; console.log("BILLBOARD CONFIRMED", window.__confirmCount); },
+        () => { console.log("billboard cancelled"); });
     },
   };
   window.__ready = true;

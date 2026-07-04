@@ -306,6 +306,7 @@ Colonist's action tray (bottom-center) buttons:
 - Your hand cards: `.cardContainer-* .clickable-*` (draggable/clickable). Dev cards in right panel: `.cardStackContainer-*` with txt = dev id (10/15/12/…).
 Buy-dev action id probe: NOT in {12,13,14,20-27,44-48} (all sent ok but never grew the dev deck). Capture via a TRUSTED click on `#action-button-buy-dev-card` + read window.__catan3d.outActions (harness/probe-buydev.js).
 GOTCHA: the `.colonist-profile` gets LOCKED by lingering Playwright chrome.exe (kill via `Get-CimInstance Win32_Process | ? CommandLine -like '*colonist-profile*' | Stop-Process -Force` + rm SingletonLock) — a locked profile makes every launch reuse a stuck session (silent flakiness). ALWAYS kill+clear before a run, and run ONE at a time.
+GOTCHA-2: after MANY rapid game-start runs the ACCOUNT accumulates stale/stuck games; then `startBotGame` throws/exits silently (process exit 0, no logs) and clicking "Reconnect" drops you into a conflicting game that wedges the page. Fix: don't click Reconnect; wait for stale games to expire (several min of no active session) before the next fresh-start run. This blocked the buy-dev capture in one session despite the tools being correct.
 
 ### type-91 diff + gameLog vocabulary — ✅ VERIFIED (half-game human capture, debug/hud/, 2026-07-04)
 **Dev cards** — `mechanicDevelopmentCardsState`:
