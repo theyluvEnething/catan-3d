@@ -20,8 +20,8 @@ const log = (...a) => console.log(`[${((Date.now() - T0) / 1000).toFixed(0)}s]`,
 const WOOD = 1, BRICK = 2, SHEEP = 3, WHEAT = 4, ORE = 5;
 const COST = { road: { [WOOD]: 1, [BRICK]: 1 }, settlement: { [WOOD]: 1, [BRICK]: 1, [SHEEP]: 1, [WHEAT]: 1 }, city: { [WHEAT]: 2, [ORE]: 3 }, dev: { [SHEEP]: 1, [WHEAT]: 1, [ORE]: 1 } };
 // city action id: try candidates until one upgrades a settlement, then lock it.
-const CITY_CANDS = [28, 47, 27, 17, 12, 16];
-let CITY_ACTION = null;
+const CITY_CANDS = [19]; // ✅ VERIFIED: action 19 = build city (payload cornerIndex)
+let CITY_ACTION = 19;
 const DEV_CANDS = [21, 24, 22, 46];
 let DEV_ACTION = null;
 const ROBBER_ACTION = 3; // captured candidate; falls back to trusted click if it fails
@@ -41,7 +41,14 @@ const box = await canvas.boundingBox();
 const cx = box.x + box.width / 2, cy = box.y + box.height / 2, R = Math.min(box.width, box.height) * 0.42;
 
 // ---- state readers ----
-const core = () => page.evaluate(() => { const s = window.__catan3d.state; const ps = s.playerState(s.us) || {}; const vp = ps.victoryPointsState ? Object.values(ps.victoryPointsState).reduce((a, x) => a + (typeof x === "number" ? x : 0), 0) : 0; return { us: s.us, turn: s.currentTurnColor, completed: s.completedTurns, turnState: s.turnState, actionState: s.actionState, robber: s.robberTileIndex, hand: (ps.resourceCards && ps.resourceCards.cards) || {}, vp, ratios: ps.bankTradeRatiosState || {} }; });
+const core = () => page.evaluate(() => {
+  const s = window.__catan3d.state; const ps = s.playerState(s.us) || {};
+  const vp = ps.victoryPointsState ? Object.values(ps.victoryPointsState).reduce((a, x) => a + (typeof x === "number" ? x : 0), 0) : 0;
+  // resourceCards.cards is an ARRAY of resource-ids (one entry per card). Count occurrences.
+  const raw = (ps.resourceCards && ps.resourceCards.cards) || [];
+  const hand = {}; if (Array.isArray(raw)) { for (const r of raw) hand[r] = (hand[r] || 0) + 1; } else { Object.assign(hand, raw); }
+  return { us: s.us, turn: s.currentTurnColor, completed: s.completedTurns, turnState: s.turnState, actionState: s.actionState, robber: s.robberTileIndex, hand, handSize: Array.isArray(raw) ? raw.length : 0, vp, ratios: ps.bankTradeRatiosState || {} };
+});
 const endTurn = async () => { await page.evaluate(() => window.__catan3d.sendGameAction(6, true)); await sleep(1000); };
 const allVP = () => page.evaluate(() => { const s = window.__catan3d.snapshot(); return s.players.map((p) => `${p.color}:${p.vp}`).join(" "); });
 const prompt = () => page.evaluate(() => { const el = document.querySelector("[class*=messageContainer]"); return el ? (el.innerText || "").trim().toLowerCase() : ""; });
@@ -92,13 +99,15 @@ async function doCity() {
   const cityCorner = await page.evaluate(() => { const L = window.__catan3d.legalCities(); return L.length ? L[0].i : null; });
   if (cityCorner == null) return false;
   const cands = CITY_ACTION ? [CITY_ACTION] : CITY_CANDS;
+  log("doCity trying candidates on corner", cityCorner, "cands", cands.join(","));
   for (const cand of cands) {
     const before = await page.evaluate((i) => window.__catan3d.state.gameState.mapState.tileCornerStates[i].buildingType, cityCorner);
     await page.evaluate(({ cand, i }) => window.__catan3d.sendGameAction(cand, i), { cand, i: cityCorner });
-    await sleep(1000);
+    await sleep(850);
     const after = await page.evaluate((i) => window.__catan3d.state.gameState.mapState.tileCornerStates[i].buildingType, cityCorner);
     if (after === 2 && before !== 2) { if (!CITY_ACTION) { CITY_ACTION = cand; log("DISCOVERED city action =", cand); } return true; }
   }
+  log("doCity: no candidate worked");
   return false;
 }
 
@@ -163,6 +172,8 @@ while (Date.now() - T0 < MAX_MS) {
 
   // BUILD PHASE (ts2) — priority: city > settlement > devcard > road. Build as many as afford.
   const hand = c.hand;
+  const legalCounts = await page.evaluate(() => ({ set: window.__catan3d.legalSettlements().length, cit: window.__catan3d.legalCities().length, road: window.__catan3d.legalRoads().length }));
+  log(`BUILD ts2 hand=${JSON.stringify(hand)} legal(s/c/r)=${legalCounts.set}/${legalCounts.cit}/${legalCounts.road} afford: city=${canAfford(hand, COST.city)} set=${canAfford(hand, COST.settlement)} road=${canAfford(hand, COST.road)}`);
   let builtSomething = false;
   for (let step = 0; step < 4; step++) {
     const h = (await core()).hand;

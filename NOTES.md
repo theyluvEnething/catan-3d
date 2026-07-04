@@ -153,6 +153,7 @@ Game-channel frame: `b0=3`, `channel = <serverId>` (e.g. "012634"), body =
 | 66 | hover/preview a corner (mouse-move) | cornerIndex (null = un-hover) — cosmetic |
 | **15** | **build settlement** | **cornerIndex** (index into tileCornerStates) |
 | **11** | **build road** | **edgeIndex** (index into tileEdgeStates) |
+| **19** | **build city** (upgrade settlement) | **cornerIndex** ✅ (found via wide direct-send enum; buildingType→2). UI button `#action-button-build-city`. |
 | **2** | **discard card (on a 7)** | **`true`** — one frame per card; count = #cards discarded ✅ |
 | 🟡 6 | **end turn / pass** (confidence: med) | `true` — fires on every Spacebar-pass in main phase |
 | 🟡 3 | **move robber** (confidence: med) | hexIndex — captured when the robber moved (play-and-capture clone 42) |
