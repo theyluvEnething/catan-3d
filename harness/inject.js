@@ -32,6 +32,9 @@ export function buildInitScript() {
   const decode = deExport(read("protocol/decode.js"));
   const gameState = deExport(read("state/gameState.js"));
   const hud = deExport(read("render/hud.js"));
+  // Pure geometry + legal-move logic (no three.js) — strip their cross-imports too.
+  const boardGeom = deExport(read("render/boardGeometry.js"));
+  const legal = deExport(read("interact/legal.js")).replace(/^import\s+.*$/gm, "");
 
   // Assemble a single IIFE. Order matters: decode -> gameState -> hud -> glue.
   return `
@@ -46,6 +49,12 @@ export function buildInitScript() {
 
   // ---- gameState.js ----
   ${gameState}
+
+  // ---- boardGeometry.js (pure) ----
+  ${boardGeom}
+
+  // ---- legal.js (pure) ----
+  ${legal}
 
   // ---- hud.js ----
   ${hud}
@@ -122,6 +131,11 @@ export function buildInitScript() {
     wire: () => ({ channel: wire.channel, sequence: wire.sequence, open: wire.socket && wire.socket.readyState === 1 }),
     buildSettlement: (cornerIndex) => sendGameAction(15, cornerIndex),
     buildRoad: (edgeIndex) => sendGameAction(11, edgeIndex),
+    // legal-move helpers (pure; from legal.js) bound to the live state
+    legalSettlements: (opts) => { try { return legalSettlementCorners(state, opts); } catch(e){ return []; } },
+    legalCities: () => { try { return legalCityCorners(state); } catch(e){ return []; } },
+    legalRoads: (opts) => { try { return legalRoadEdges(state, opts); } catch(e){ return []; } },
+    legalRobberHexes: () => { try { return legalRobberHexes(state); } catch(e){ return []; } },
     snapshot: () => ({
       ready: state.ready, us: state.us, playOrder: state.playOrder,
       turn: state.currentTurnColor, phase: { turnState: state.turnState, actionState: state.actionState },

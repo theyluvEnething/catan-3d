@@ -153,9 +153,31 @@ Game-channel frame: `b0=3`, `channel = <serverId>` (e.g. "012634"), body =
 | 66 | hover/preview a corner (mouse-move) | cornerIndex (null = un-hover) — cosmetic |
 | **15** | **build settlement** | **cornerIndex** (index into tileCornerStates) |
 | **11** | **build road** | **edgeIndex** (index into tileEdgeStates) |
+| **2** | **discard card (on a 7)** | **`true`** — one frame per card; count = #cards discarded ✅ |
+| 🟡 47 | **city upgrade?** (confidence: low) | `true` — candidate from city capture, unconfirmed |
+| 🟡 6 | commit/confirm terminal? (confidence: low) | `true` — trailing frame in city capture, unconfirmed |
 
 > Payload is the **board index**, NOT a pixel — direct-send needs no calibration.
-> TODO capture: city upgrade, move-robber (+steal), dev card, trade.
+> `action 2` (discard) uses payload `true`, NOT an index — it is a per-card confirm toggle.
+> Still TODO capture: dice roll, end-turn/pass, move-robber (+steal), buy dev card, trade.
+
+**Capture evidence:**
+- **discard = 2** ✅ (high): two isolated clone captures — `{action:2,payload:true}` appears
+  only in the discard window and its count equals the cards discarded (run1 discarded 3 →
+  three frames; run2 discarded 1 → one frame). The leading 15/11 frames are setup noise.
+- **city** 🟡 (low): raw commit stream captured was
+  `[15/30, 15/31, 11/40, 11/40, 15/50, 15/48, {2,true}, {47,true}, {6,true}]`. The 15s
+  (settlement) and 11s (road) are setup noise; `{2,true}` is now known to be *discard/confirm*,
+  NOT city. So the actual city-build id is one of `{47, 6}` (both payload `true`) — **not yet
+  isolated**. Do NOT rely on this until a clean single-action capture confirms which.
+- **roll / pass / robber / buydev** ❌ not captured — every attempt (3 each) crashed before the
+  board loaded (`#game-canvas` null; lobby never cleared, "Reconnect" notification on the
+  cloned profiles). No outgoing IDs observed → intentionally left out of the table (no guesses).
+
+> ⚠️ Harness note: `capture-action.js` (~L30-33) sleeps a fixed 4500ms then dereferences
+> `page.$("#game-canvas")` without gating on `startBotGame()`'s returned `inGame` flag, so a
+> failed/slow board load NPEs instead of emitting a clean `{which,...,error}` line. The discard
+> run applied a poll-for-canvas fix; the roll/pass/robber/buydev runs still hit the raw crash.
 
 ### Interaction strategy decision (Phase 3) — DIRECT-SEND
 Synthetic in-page pointer events do **NOT** work: Colonist's WebGL input requires `isTrusted`

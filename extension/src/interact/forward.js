@@ -1,31 +1,54 @@
 /**
- * src/interact/forward.js — coordinate-forwarding interaction layer (Phase 3).
+ * src/interact/forward.js — 3D-click interaction layer (Phase 3, DIRECT-SEND).
  *
  * On a click in the 3D scene we raycast to the nearest board target (vertex→settlement/city,
- * edge→road, hex→robber), map that target's board-space position to a pixel on Colonist's
- * hidden canvas via the calibrated affine, and dispatch synthetic pointer events there.
- * Colonist validates the move and emits the real WebSocket message. We never fabricate the
- * outgoing protocol (forwarding only), per the spec's primary strategy.
+ * edge→road, hex→robber), look up that target's INDEX in the reconstructed
+ * gameState.mapState (tileCornerStates / tileEdgeStates / tileHexStates, matched by x,y,z),
+ * and place the piece by DIRECT SEND — emitting the real build message on the game socket
+ * (window.__catan3d.buildSettlement/buildRoad, or the generic sendGameAction). Synthetic
+ * pointer events do NOT work: Colonist's WebGL input requires isTrusted events (NOTES §2.160).
  *
- * The affine (board→pixel) is provided by the caller (harness derives it via RANSAC on token
- * discs; a live-extension deriver can be added later). Placement CONTEXT (what a click means)
- * comes from the state model's phase/turn info.
+ * legal.js gates every click: only targets that are legal for the current context (settlement/
+ * city/road/robber, setup vs. main phase) can be hovered or sent, so we never emit an illegal
+ * action. The 3D→pixel affine is kept only as an optional fallback for the legacy synthetic
+ * path (forwardClick) and is off the critical path.
+ *
+ * Placement CONTEXT (what a click means) comes from the state model's phase/turn info.
  */
 import * as THREE from "../../vendor/three.module.js";
 import { hexCenter, cornerPosExact, edgePos } from "../render/boardGeometry.js";
+import {
+  legalSettlementCorners, legalCityCorners, legalRoadEdges, legalRobberHexes,
+} from "./legal.js";
+
+// GAME-channel action codes. 15/11 are ✅ verified from live capture (NOTES §2.147); city &
+// robber are 🟡 unverified (robottler table) and only fire when explicitly enabled.
+const ACTION_BUILD_CITY = 28;  // 🟡 BUILD_CITY — unverified, guarded by allowUnverified
+const ACTION_MOVE_ROBBER = 16; // 🟡 MOVE_ROBBER — unverified, guarded by allowUnverified
+
+// Coord key for matching legal-target lists against pick targets. Robber targets (hexes) key
+// on (x,y) only; corners/edges key on (x,y,z).
+const keyOf = (c, ctx) => (ctx === "robber" ? `${c.x},${c.y}` : `${c.x},${c.y},${c.z}`);
 
 export class Forwarder {
   /**
    * @param {BoardScene} scene
    * @param {GameState} state
-   * @param {HTMLCanvasElement} colonistCanvas  the hidden #game-canvas
-   * @param {{a,b,tx,c,d,ty}} affine  board-space -> page-pixel transform
+   * @param {object} [opts]
+   * @param {object} [opts.send]  direct-send API (buildSettlement/buildRoad/sendGameAction).
+   *   Defaults to window.__catan3d at call time.
+   * @param {HTMLCanvasElement} [opts.colonistCanvas]  hidden #game-canvas (legacy synthetic path).
+   * @param {{a,b,tx,c,d,ty}} [opts.affine]  board→pixel transform (legacy synthetic path only).
+   * @param {boolean} [opts.allowUnverified]  permit city/robber sends whose action codes are
+   *   not yet verified from live capture. Off by default so we never emit a garbage action.
    */
-  constructor(scene, state, colonistCanvas, affine) {
+  constructor(scene, state, opts = {}) {
     this.scene = scene;
     this.state = state;
-    this.canvas = colonistCanvas;
-    this.affine = affine;
+    this._send = opts.send || null;
+    this.canvas = opts.colonistCanvas || null;
+    this.affine = opts.affine || null;
+    this.allowUnverified = !!opts.allowUnverified;
     this.raycaster = new THREE.Raycaster();
     this.pointer = new THREE.Vector2();
     this._pickers = { corners: [], edges: [], hexes: [] };
@@ -35,6 +58,10 @@ export class Forwarder {
   }
 
   setAffine(aff) { this.affine = aff; }
+
+  // The direct-send API (buildSettlement/buildRoad/sendGameAction). Prefers an injected api,
+  // else the page-global window.__catan3d installed by the runtime glue.
+  get sendApi() { return this._send || (typeof window !== "undefined" ? window.__catan3d : null); }
 
   boardToPixel(u, v) {
     const a = this.affine;
@@ -83,12 +110,45 @@ export class Forwarder {
   }
 
   _pickablesForContext() {
-    // Which target kind is relevant right now, from the state phase.
+    // Only the LEGAL targets for the current context are pickable (hover + click), so we never
+    // highlight or send an illegal move. legal.js computes them from the reconstructed state.
     const p = this._context();
-    if (p === "settlement" || p === "city") return this._pickers.corners;
-    if (p === "road") return this._pickers.edges;
-    if (p === "robber") return this._pickers.hexes;
-    return [];
+    if (!p) return [];
+    const legalKeys = this._legalKeys(p);
+    if (!legalKeys) return [];
+    const kind = p === "road" ? "edges" : p === "robber" ? "hexes" : "corners";
+    return this._pickers[kind].filter((m) => legalKeys.has(keyOf(m.userData.coord, p)));
+  }
+
+  // Set of "x,y,z" (or "x,y" for hexes) keys that are legal for the given context.
+  _legalKeys(ctx) {
+    if (!this.state?.gameState?.mapState) return null;
+    const setup = (this.state.completedTurns ?? 0) < 8;
+    let list;
+    try {
+      if (ctx === "settlement") list = legalSettlementCorners(this.state, { setup });
+      else if (ctx === "city") list = legalCityCorners(this.state);
+      else if (ctx === "road") list = legalRoadEdges(this.state, { setup, fromCorner: this._lastSettlement || null });
+      else if (ctx === "robber") list = legalRobberHexes(this.state);
+      else return null;
+    } catch (e) { console.warn("[catan3d/forward] legal calc failed", e); return null; }
+    const keys = new Set();
+    for (const t of list || []) keys.add(keyOf(t, ctx));
+    return keys;
+  }
+
+  // Look up the mapState INDEX of a raycast target by matching its (x,y,z) coord.
+  _indexOf(coord, ctx) {
+    const ms = this.state?.gameState?.mapState;
+    if (!ms) return -1;
+    const table = ctx === "road" ? ms.tileEdgeStates
+      : ctx === "robber" ? ms.tileHexStates
+        : ms.tileCornerStates;
+    if (!table) return -1;
+    for (const [i, t] of Object.entries(table)) {
+      if (t && t.x === coord.x && t.y === coord.y && (ctx === "robber" || t.z === coord.z)) return Number(i);
+    }
+    return -1;
   }
 
   // Derive the current interaction context from the state model.
@@ -138,15 +198,38 @@ export class Forwarder {
   _onClick(ev) {
     const ctx = this._context();
     if (!ctx) return;
-    const pickables = this._pickablesForContext();
+    const pickables = this._pickablesForContext(); // already filtered to legal targets
     const hit = this._raycast(ev, pickables);
     if (!hit) return;
-    const { u, v } = hit.userData;
-    const [px, py] = this.boardToPixel(u, v);
-    this.forwardClick(px, py);
+    const { coord } = hit.userData;
+    const index = this._indexOf(coord, ctx);
+    if (index < 0) { console.warn("[catan3d/forward] no index for target", coord, ctx); return; }
+    return this._place(ctx, index, coord);
   }
 
-  // Dispatch a synthetic pointer/mouse click to Colonist's canvas at page-pixel (px,py).
+  // Place a piece by DIRECT SEND: emit the real build message on the game socket via the
+  // direct-send API. Returns the send result ({ok,...}) or an error object.
+  _place(ctx, index, coord) {
+    const api = this.sendApi;
+    if (!api) { console.warn("[catan3d/forward] no direct-send api (window.__catan3d)"); return { ok: false, error: "no send api" }; }
+    let res;
+    if (ctx === "settlement") res = api.buildSettlement(index);
+    else if (ctx === "road") res = api.buildRoad(index);
+    else if (ctx === "city") {
+      if (!this.allowUnverified) { console.warn("[catan3d/forward] city action unverified; enable allowUnverified to send"); return { ok: false, error: "city unverified" }; }
+      res = api.sendGameAction(ACTION_BUILD_CITY, index);
+    } else if (ctx === "robber") {
+      if (!this.allowUnverified) { console.warn("[catan3d/forward] robber action unverified; enable allowUnverified to send"); return { ok: false, error: "robber unverified" }; }
+      res = api.sendGameAction(ACTION_MOVE_ROBBER, index);
+    } else return { ok: false, error: "unknown context" };
+    // Remember the settlement we just placed so setup road legality can key off it.
+    if (ctx === "settlement" && res && res.ok) this._lastSettlement = coord;
+    this._setHover(null); // clear highlight after a placement
+    return res;
+  }
+
+  // LEGACY: dispatch a synthetic pointer/mouse click to Colonist's canvas at page-pixel (px,py).
+  // Kept for the harness/pixel path only — Colonist ignores untrusted events for real placement.
   forwardClick(px, py) {
     const canvas = this.canvas;
     const rect = canvas.getBoundingClientRect();
