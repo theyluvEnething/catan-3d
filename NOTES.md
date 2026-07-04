@@ -158,6 +158,7 @@ Game-channel frame: `b0=3`, `channel = <serverId>` (e.g. "012634"), body =
 | **6** | **end turn / pass** | `true` — fires on every pass in main phase ✅ |
 | **3** | **move robber** | hexIndex ✅ (verified: robber tile changes; `robber3ok`) |
 | **47** | **add card to trade-creator** | `true` — one per card added to the offer/want builder (see trade note) |
+| **50** | **respond to a trade offer** | `{id: "<tradeId>", response: <int>}` ✅ (captured; accept/reject a pending trade) |
 | 🟡 67 | subscribe/keepalive (channel string payload) | serverId — NOT a gameplay action |
 
 ### 🟡 Bank/maritime trade — mechanism mapped, execute-frame not isolated
@@ -167,12 +168,19 @@ bank or player trade. Adding a card to the builder sends **`{action:47, payload:
 resource is implied by *which* card button is clicked; payload carries no resource id).
 Incoming trade data arrives as **type 43** with fields
 `{givingPlayer, givingCards, receivingPlayer, receivingCards}`.
-The bank-execute frame was NOT cleanly isolated: the trade-creator is a React panel that
-re-renders and repositions its card buttons after every click, so scripted `page.mouse.click`
-choreography only reliably lands the first add (one action-47 per attempt), never a valid 4:1.
-**Automating bank-trade needs either** (a) driving the create-trade action directly with the
-type-43 card-array payload shape, or (b) a more robust UI driver keyed on stable card-button
-selectors. Left as a documented TODO — it is the one blocker to a fully-autonomous 10-VP win.
+The bank-execute frame was NOT cleanly isolated. Exhaustive attempts:
+- **UI-click (5 variants):** the trade-creator is a React panel that re-renders and repositions
+  its card buttons after every click, so scripted `page.mouse.click` choreography only reliably
+  lands the first add (one action-47 per attempt), never a valid 4:1.
+- **Type-43 shape:** captured the trade data shape `{givingPlayer, givingCards:[resIds],
+  receivingPlayer, receivingCards:[resIds]}` from bot trades (resource cards are arrays of ids).
+- **Direct-send (105 combos):** enumerated 21 candidate actions × 5 payload shapes (givingCards/
+  receivingCards, offeredResources/wantedResources, give/receive, +isBankTrade, +receivingPlayer)
+  — none changed the hand. The create-trade action id is outside 40–62.
+**Left as a documented TODO** — it is the one blocker to a fully-autonomous 10-VP win. Next
+angle: sniff the OUTGOING frame when a HUMAN completes a bank trade in a normal browser session
+(the harness can't reliably drive the React panel, but a real user click will emit the exact
+frame), or diff the webpack action-enum table from Colonist's own bundle.
 
 > Payload is the **board index**, NOT a pixel — direct-send needs no calibration.
 > `action 2` (discard) uses payload `true`, NOT an index — it is a per-card confirm toggle.
