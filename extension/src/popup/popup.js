@@ -9,7 +9,7 @@ const HAS_CHROME = typeof chrome !== "undefined" && !!chrome.storage;
 
 const DEFAULTS = {
   enabled: true, opacity: 1, transparentBg: false,
-  autoRotate: false, showHud: false, showMarkers: true,
+  autoRotate: false, showHud: false, showGameHud: true, showMarkers: true,
 };
 const KEY = "catan3d.settings";
 
@@ -23,7 +23,7 @@ const els = {
   master: $("masterCard"), masterSub: $("masterSub"), settings: $("settings"),
   opacity: $("opacity"), opacityVal: $("opacityVal"),
   transparentBg: $("transparentBg"), autoRotate: $("autoRotate"),
-  showMarkers: $("showMarkers"), showHud: $("showHud"), resetCam: $("resetCam"),
+  showMarkers: $("showMarkers"), showHud: $("showHud"), showGameHud: $("showGameHud"), resetCam: $("resetCam"),
   statusPill: $("statusPill"), statusText: $("statusText"),
   statTurn: $("statTurn"), statSync: $("statSync"),
 };
@@ -72,6 +72,7 @@ function renderControls() {
 
   els.transparentBg.checked = !!settings.transparentBg;
   els.autoRotate.checked = !!settings.autoRotate;
+  els.showGameHud.checked = settings.showGameHud !== false;
   els.showMarkers.checked = !!settings.showMarkers;
   els.showHud.checked = !!settings.showHud;
 }
@@ -118,6 +119,7 @@ function wire() {
   const bind = (el, key) => el.addEventListener("change", () => persist({ [key]: el.checked }));
   bind(els.transparentBg, "transparentBg");
   bind(els.autoRotate, "autoRotate");
+  bind(els.showGameHud, "showGameHud");
   bind(els.showMarkers, "showMarkers");
   bind(els.showHud, "showHud");
 
