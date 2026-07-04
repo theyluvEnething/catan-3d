@@ -54,11 +54,18 @@ frames, in real time, with **zero desync** from Colonist's own state.
   | Move robber | `action 3` (hexIndex) | ✅ |
   | Discard on 7 | `action 2` (per card) | ✅ |
   | End turn / pass | `action 6` | ✅ |
+  | Respond to trade | `action 50` (`{id, response}`) | ✅ |
 
 - A legal-move engine (distance rule, road connectivity, city-on-own-settlement, robber hexes)
-  gates every click so only valid moves are highlighted or sent.
+  gates every click, and **faint rings mark every legal target** on the 3D board during your turn
+  (green for build spots, amber for robber hexes) with a brighter hover highlight.
 - Full **initial placement** (both settlements + both roads) plays start-to-finish through the
   3D layer, and cities/robber all work — see the example round below.
+
+**Desync watchdog** — every time Colonist sends a fresh authoritative snapshot, the watchdog
+compares our diff-reconstructed board against it and flags any drift. Across a **69-turn**
+Gate-3 evidence game it reported **0 desyncs**, independently reconfirming the reconstruction
+never drifts. The HUD shows a live green/red sync indicator.
 
 ---
 
@@ -72,7 +79,9 @@ setup settlements: 2   setup roads: 2   main turns: 4   rolls: 66   desyncs: 0
 ```
 
 Zero desync between our reconstructed state and Colonist's actual game, start to finish. The
-showcase images above are from this run.
+showcase images above are from this run. A longer Gate-3 evidence game
+(`node harness/strategy-player.js`) played **69 completed turns** through the 3D layer with the
+watchdog reporting **0 desyncs**.
 
 ---
 
@@ -96,7 +105,9 @@ extension/
   src/protocol/
     interceptor.js           MAIN world: patches WebSocket, direct-send + postMessage bridge
     decode.js                MessagePack decode/encode + Colonist framing
-  src/state/gameState.js     applies snapshot + diffs -> live model
+  src/state/
+    gameState.js             applies snapshot + diffs -> live model
+    watchdog.js              flags drift vs each fresh authoritative snapshot
   src/render/
     scene.js                 Three.js diorama renderer
     materials.js             procedural PBR tile/token/water/sand materials
@@ -105,7 +116,7 @@ extension/
     hud.js                   on-page debug HUD (Alt+H)
   src/interact/
     legal.js                 legal-move computation
-    forward.js               3D click -> raycast -> legal -> direct-send
+    forward.js               3D click -> raycast -> legal -> direct-send + legal-target markers
     controller.js            turn/phase state machine
   vendor/                    Three.js (bundled, no CDN)
 harness/                     Playwright dev/test harness
