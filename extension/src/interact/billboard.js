@@ -27,6 +27,7 @@ export class ConfirmBillboard {
     this._world = new THREE.Vector3();
     this._active = null;      // { world, onConfirm, onCancel }
     this._raf = 0;
+    this.confirmedAt = 0;     // timestamp of last confirm — forwarder suppresses stray clicks after
     this._build();
   }
 
@@ -50,17 +51,24 @@ export class ConfirmBillboard {
     this.iconEl = el.querySelector(".bb-icon");
     document.body.appendChild(el);
 
-    // Confirm on pointerdown (beats any capture-phase handlers Colonist attaches on click) and
-    // also on click as a fallback. Guard against double-firing via a small latch.
-    const confirm = (e) => {
+    // Confirm on CLICK (not pointerdown): the full press→release→click gesture must complete on
+    // the billboard element itself. Confirming on pointerdown would hide the billboard mid-gesture,
+    // and the trailing pointerup/click would then land on the board canvas underneath and re-fire
+    // its raycast handler — the "first house closes immediately" bug. We also stop the gesture's
+    // pointer events from reaching anything else, and stamp confirmedAt so the forwarder can
+    // suppress any stray click that still leaks through right after we hide.
+    const swallow = (e) => { e.preventDefault(); e.stopPropagation(); };
+    el.addEventListener("pointerdown", swallow, true);
+    el.addEventListener("pointerup", swallow, true);
+    el.addEventListener("mousedown", swallow, true);
+    el.addEventListener("mouseup", swallow, true);
+    el.addEventListener("click", (e) => {
       e.preventDefault(); e.stopPropagation();
       if (this._confirming) return; this._confirming = true;
-      const a = this._active; this.hide();
+      const a = this._active; this.confirmedAt = Date.now(); this.hide();
       if (a && a.onConfirm) { try { a.onConfirm(); } catch (err) { console.warn("[catan3d] billboard confirm failed", err); } }
-      setTimeout(() => { this._confirming = false; }, 50);
-    };
-    el.addEventListener("pointerdown", confirm, true);
-    el.addEventListener("click", confirm, true);
+      setTimeout(() => { this._confirming = false; }, 60);
+    }, true);
   }
 
   /**
@@ -71,17 +79,24 @@ export class ConfirmBillboard {
    * @param {()=>void} onConfirm
    * @param {()=>void} [onCancel]
    */
-  async show(world, kind, colorId, onConfirm, onCancel) {
+  show(world, kind, colorId, onConfirm, onCancel) {
     this._active = { world: new THREE.Vector3(world.x, world.y, world.z), onConfirm, onCancel };
-    // pick icon
-    let src = "";
-    if (kind === "settlement" || kind === "city" || kind === "road") src = await pieceDataUrl(kind, colorId);
-    else if (kind === "robber") src = assetUrl("icon_player") || "";
-    else if (kind === "dev") src = assetUrl("card_devcardback") || "";
-    this.iconEl.src = src;
+    // Show the plate IMMEDIATELY and position it, so it never lags behind the click — the piece
+    // recolor (pieceDataUrl) is async and, uncached on the FIRST placement, would otherwise leave
+    // the billboard invisible for a beat (the "first house is broken" symptom). Fill the icon in
+    // when it resolves.
+    this.iconEl.src = "";
     this.el.style.display = "block";
+    this.el.style.visibility = "visible";
     this._tick();
     if (!this._raf) this._loop();
+    const token = (this._iconToken = (this._iconToken || 0) + 1);
+    Promise.resolve(
+      (kind === "settlement" || kind === "city" || kind === "road") ? pieceDataUrl(kind, colorId)
+        : (kind === "robber") ? (assetUrl("icon_player") || "")
+          : (kind === "dev") ? (assetUrl("card_devcardback") || "") : ""
+    ).then((src) => { if (this._iconToken === token && this._active) this.iconEl.src = src || ""; }).catch(() => {});
+    return this;
   }
 
   hide() {

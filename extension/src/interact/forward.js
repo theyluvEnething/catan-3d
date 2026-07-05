@@ -232,6 +232,10 @@ export class Forwarder {
   }
 
   _onClick(ev) {
+    // Suppress the stray click that can leak to the canvas immediately after a billboard confirm
+    // (the click gesture that pressed the billboard finishing after we hid it). Without this the
+    // FIRST placement would instantly re-raycast and re-open/close a billboard.
+    if (this._billboard && this._billboard.confirmedAt && (Date.now() - this._billboard.confirmedAt) < 250) return;
     // If a confirm billboard is already up, a click elsewhere cancels it (the billboard's own
     // click handler stops propagation, so reaching here means "clicked off").
     if (this._billboard && this._billboard.isActive) { this._billboard.cancel(); return; }
