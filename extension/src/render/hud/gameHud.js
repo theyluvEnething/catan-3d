@@ -9,7 +9,7 @@
  *
  * Assets are Colonist's own SVGs (src/render/assets.js). Player pieces are recolored per player.
  */
-import { assetUrl, pieceDataUrl, svgText, PLAYER_HEX } from "../assets.js";
+import { assetUrl, pieceDataUrl, svgText, diceAsset, PLAYER_HEX } from "../assets.js";
 import { RES_ORDER, RES_ASSET, DEV_ASSET } from "../../state/gameModel.js";
 
 // action id -> asset name for tray buttons.
@@ -73,6 +73,7 @@ export class GameHud {
       <div class="c3d-bottom">
         <div class="c3d-status">
           <div class="c3d-pill pe"><span class="who"></span><span class="txt">Waiting…</span></div>
+          <div class="c3d-dice" hidden><img class="d1" alt="die"><img class="d2" alt="die"></div>
           <div class="c3d-timer">–:––</div>
         </div>
         <div class="c3d-tray">
@@ -83,7 +84,7 @@ export class GameHud {
             ${this._actBtn("road", null, null, "road")}
             ${this._actBtn("settlement", null, null, "settlement")}
             ${this._actBtn("city", null, null, "city")}
-            ${this._actBtn("endturn", "icon_hourglass")}
+            ${this._actBtn("endturn", "icon_pass_turn")}
           </div>
         </div>
       </div>`;
@@ -94,6 +95,7 @@ export class GameHud {
     this.bankEl = el.querySelector(".c3d-bank");
     this.playersEl = el.querySelector(".c3d-players");
     this.pillEl = el.querySelector(".c3d-pill");
+    this.diceEl = el.querySelector(".c3d-dice");
     this.timerEl = el.querySelector(".c3d-timer");
     this.handEl = el.querySelector(".c3d-hand");
     this.actionsEl = el.querySelector(".c3d-actions");
@@ -202,6 +204,7 @@ export class GameHud {
   _renderStatus(snap) {
     const cur = snap.players.find((p) => p.color === snap.turnColor);
     this.pillEl.style.setProperty("--pc", cur?.hex || "#888");
+    this._renderDice(snap.dice);
     const txt = this.pillEl.querySelector(".txt");
     if (snap.yourTurn) {
       const map = { 0: "Place Settlement", 1: "Your turn", 2: "Build or trade" };
@@ -213,6 +216,21 @@ export class GameHud {
     } else {
       txt.textContent = `${cur ? cur.name : "Opponent"}'s turn`;
     }
+  }
+
+  // Show the two rolled dice next to the status pill. Hidden until the dice are thrown; the faces
+  // update whenever d1/d2 change (only re-set the <img> src when the value changes to avoid churn).
+  _renderDice(dice) {
+    if (!this.diceEl) return;
+    if (!dice || !dice.thrown || !dice.d1 || !dice.d2) { this.diceEl.hidden = true; return; }
+    this.diceEl.hidden = false;
+    const set = (cls, val) => {
+      const img = this.diceEl.querySelector(cls);
+      if (!img) return;
+      if (img.dataset.face !== String(val)) { img.src = assetUrl(diceAsset(val)) || ""; img.dataset.face = String(val); img.alt = `die ${val}`; }
+    };
+    set(".d1", dice.d1);
+    set(".d2", dice.d2);
   }
 
   async _renderHand(you) {

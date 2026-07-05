@@ -62,6 +62,8 @@
 .c3d-pill { display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px; border-radius: 999px; font-weight: 800; font-size: 14px;
   background: #f4ecd8; color: #3a3a3a; box-shadow: 0 2px 6px rgba(0,0,0,.25); }
 .c3d-pill .who { width: 20px; height: 20px; border-radius: 50%; background: var(--pc,#888); }
+.c3d-dice { display: flex; align-items: center; gap: 4px; }
+.c3d-dice img { width: 30px; height: 30px; display: block; filter: drop-shadow(0 2px 3px rgba(0,0,0,.35)); }
 .c3d-timer { padding: 7px 12px; border-radius: 10px; background: #d9e7ef; color: #2b3a44; font-weight: 800; font-size: 14px; font-variant-numeric: tabular-nums; box-shadow: 0 2px 6px rgba(0,0,0,.25); }
 
 /* card hand + actions row */

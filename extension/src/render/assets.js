@@ -21,8 +21,14 @@ const FILES = {
   icon_hourglass: "icon_hourglass.svg", icon_trophy: "icon_trophy.svg",
   icon_settings: "icon_settings.svg", icon_book: "icon_book.svg",
   icon_fullscreen_expand: "icon_fullscreen_expand.svg", icon_info: "icon_info.svg",
+  icon_pass_turn: "icon_pass_turn.svg",
+  dice_1: "dice_1.svg", dice_2: "dice_2.svg", dice_3: "dice_3.svg",
+  dice_4: "dice_4.svg", dice_5: "dice_5.svg", dice_6: "dice_6.svg",
   settlement_red: "settlement_red.svg", city_red: "city_red.svg", road_red: "road_red.svg",
 };
+
+/** The asset name for a die face value 1..6 (null for out-of-range). */
+export function diceAsset(n) { return n >= 1 && n <= 6 ? `dice_${n}` : null; }
 
 // Player colour hex per Colonist colour id (piece / panel accent).
 export const PLAYER_HEX = {
