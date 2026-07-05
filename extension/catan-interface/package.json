@@ -1,0 +1,36 @@
+{
+  "name": "catan-interface",
+  "version": "1.0.0",
+  "description": "Standalone, framework-agnostic engine for the Colonist.io game interface: MessagePack protocol, full game-state reconstruction, board/domain model, legal moves, card-counting tracker, and a normalized Observation/Action API for humans or LLM agents.",
+  "type": "module",
+  "exports": {
+    ".": "./index.js"
+  },
+  "main": "./index.js",
+  "files": [
+    "index.js",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "example": "node examples/replay-node.js"
+  },
+  "keywords": [
+    "catan",
+    "colonist",
+    "settlers",
+    "board-game",
+    "game-engine",
+    "protocol",
+    "msgpack",
+    "card-counting",
+    "llm-agent"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false
+}
