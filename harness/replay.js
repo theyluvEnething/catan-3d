@@ -2,8 +2,8 @@
 // and prints the reconstructed board/players — proving the model applies snapshot+diffs
 // correctly. This is the offline half of GATE 1.
 //   node harness/replay.js [framesDir]
-import { decodeFrame } from "../extension/src/protocol/decode.js";
-import { GameState } from "../extension/src/state/gameState.js";
+import { decodeFrame } from "../extension/catan-interface/index.js";
+import { GameState } from "../extension/catan-interface/src/state/gameState.js";
 import fs from "node:fs";
 import path from "node:path";
 

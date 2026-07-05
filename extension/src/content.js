@@ -16,12 +16,25 @@
 
   // Modules (loaded async as web-accessible ES modules).
   let decodeFrame = null;
-  let gameState = null;
+  let engine = null;      // the catan-interface engine (owns state/legal/tracker/actions)
+  let gameState = null;   // == engine.getState() — kept for the existing renderer/HUD/forwarder
   let hud = null;
 
   const rawLog = []; // ring buffer of recent raw frames for debugging
   const RAW_MAX = 5000;
   const pending = []; // frames that arrive before modules finish loading
+
+  // base64 <-> bytes helpers (frames cross the MAIN<->ISOLATED postMessage bridge as base64).
+  function bytesToB64(bytes) {
+    let bin = ""; const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    return btoa(bin);
+  }
+  function b64ToU8(b64) {
+    const bin = atob(b64); const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return u8;
+  }
 
   // Live-tunable settings (populated from chrome.storage in boot()).
   let settings = null;
@@ -120,23 +133,32 @@
 
   async function boot() {
     try {
-      const [{ decodeFrame: df }, { GameState }, { DebugHUD }, { attachWatchdog }, settingsMod] = await Promise.all([
-        import(chrome.runtime.getURL("src/protocol/decode.js")),
-        import(chrome.runtime.getURL("src/state/gameState.js")),
+      // The game logic all lives in the standalone catan-interface engine now. content.js is a
+      // thin browser ADAPTER: it feeds inbound frames to engine.ingest and transmits the engine's
+      // outbound bytes on the real socket via the MAIN-world interceptor. The engine owns
+      // decode/state/watchdog/legal/tracker/channel/sequence.
+      const [{ createEngine, decodeOutgoing }, { DebugHUD }, settingsMod] = await Promise.all([
+        import(chrome.runtime.getURL("catan-interface/index.js")),
         import(chrome.runtime.getURL("src/render/hud.js")),
-        import(chrome.runtime.getURL("src/state/watchdog.js")),
         import(chrome.runtime.getURL("src/settings.js")),
       ]);
-      decodeFrame = df;
-      gameState = new GameState();
+
+      // The engine's `send` transmits raw encoded bytes to the MAIN world, which owns the socket.
+      const transmit = (bytes) => {
+        try { window.postMessage({ source: "CATAN3D_TRANSMIT", b64: bytesToB64(bytes) }, location.origin); } catch (e) { console.warn(TAG, "transmit failed", e); }
+      };
+      engine = createEngine({ send: transmit });
+      gameState = engine.getState();     // the reconstructed GameState (same shape as before)
+      window.__catan3d.engine = engine;
+      window.__catan3d.decodeOutgoing = decodeOutgoing;
 
       // Load user settings and keep them live.
       settings = await settingsMod.loadSettings();
       settingsMod.onSettingsChanged((nv) => { settings = nv; applySettings(nv); });
 
-      // Desync watchdog — compares our reconstruction to each fresh authoritative snapshot.
-      const watchdog = attachWatchdog(gameState, { onDesync: (drifts) => { window.__catan3d.lastDesync = drifts; } });
-      window.__catan3d.desyncReport = () => watchdog.report();
+      // Desync watchdog is owned by the engine.
+      window.__catan3d.desyncReport = () => engine.watchdog.report();
+      engine.on("desync", (drifts) => { window.__catan3d.lastDesync = drifts; });
       const mountHud = () => {
         hud = new DebugHUD();
         hud.setVisible(settings.showHud);
@@ -164,22 +186,26 @@
 
       // Expose for devtools/harness.
       window.__catan3d.state = gameState;
-      window.__catan3d.decodeFrame = decodeFrame;
 
-      // Direct-send bridge to the MAIN world (interceptor owns the real socket). The Forwarder
-      // calls this to place pieces; we round-trip a CATAN3D_SEND request/response by reqId.
-      const pendingSends = new Map();
-      let reqSeq = 0;
-      window.addEventListener("message", (ev) => {
-        if (ev.source !== window || !ev.data || ev.data.source !== "CATAN3D_SEND_RESULT") return;
-        const cb = pendingSends.get(ev.data.reqId); if (cb) { pendingSends.delete(ev.data.reqId); cb(ev.data.result); }
-      });
+      // Direct-send API. The engine owns encoding + channel + sequence; sendGameAction encodes and
+      // transmits via the MAIN world. Kept as `window.__catan3d.send` with the same method names so
+      // the Forwarder and harness scripts work unchanged.
       const sendApi = {
-        sendGameAction: (action, payload) => { const reqId = ++reqSeq; return new Promise((res) => { pendingSends.set(reqId, res); window.postMessage({ source: "CATAN3D_SEND", action, payload, reqId }, location.origin); setTimeout(() => { if (pendingSends.has(reqId)) { pendingSends.delete(reqId); res({ ok: false, error: "timeout" }); } }, 1500); }); },
-        buildSettlement: (i) => sendApi.sendGameAction(15, i),
-        buildRoad: (i) => sendApi.sendGameAction(11, i),
+        sendGameAction: (action, payload) => engine.sendAction(action, payload),
+        buildSettlement: (i) => engine.sendAction(15, i),
+        buildRoad: (i) => engine.sendAction(11, i),
       };
       window.__catan3d.send = sendApi;
+      // Also expose the engine's high-level facades for the HUD / future agent.
+      window.__catan3d.legal = engine.legal;
+      window.__catan3d.tracker = engine.tracker;
+      window.__catan3d.actions = engine.actions;
+      window.__catan3d.observation = () => engine.getObservation();
+      // Legal-helper shims kept for the harness (which calls window.__catan3d.legalSettlements(...)).
+      window.__catan3d.legalSettlements = (opts) => { try { return engine.legal.settlements(); } catch { return []; } };
+      window.__catan3d.legalCities = () => { try { return engine.legal.cities(); } catch { return []; } };
+      window.__catan3d.legalRoads = (opts) => { try { return engine.legal.roads(); } catch { return []; } };
+      window.__catan3d.legalRobberHexes = () => { try { return engine.legal.robberHexes(); } catch { return []; } };
 
       // Build the faithful game model (the "internal copy") over the raw state — used by the HUD.
       const { GameModel } = await import(chrome.runtime.getURL("src/state/gameModel.js"));
@@ -311,13 +337,27 @@
   }
 
   function processFrame(msg) {
-    if (!decodeFrame || !gameState) { pending.push(msg); return; }
+    if (!engine) { pending.push(msg); return; }
     try {
-      const decoded = decodeFrame(msg);
-      if (decoded && decoded.dir === "in") gameState.applyIncoming(decoded);
+      if (msg.dir === "in") {
+        // Feed the inbound frame straight to the engine (it decodes + reconstructs state).
+        engine.ingest({ dir: "in", kind: msg.kind, text: msg.text, b64: msg.b64 });
+      } else if (msg.dir === "out" && msg.kind === "binary" && msg.b64) {
+        // Colonist's OWN outbound game frame — learn the game channel (serverId) + latest
+        // sequence so the engine's encoder stays in lock-step. (MAIN stays byte-only; ALL
+        // encoding happens in the engine here in the isolated world.)
+        try {
+          const u8 = b64ToU8(msg.b64);
+          if (u8[0] === 0x03 && window.__catan3d.decodeOutgoing) {
+            const dec = window.__catan3d.decodeOutgoing(u8);
+            if (dec && dec.channel) engine.setChannel(dec.channel);
+            if (dec && dec.body && typeof dec.body.sequence === "number") engine.setSequence(dec.body.sequence);
+          }
+        } catch {}
+      }
     } catch (e) {
       // Non-fatal: log rare undecodable frames without breaking the game.
-      if (msg.kind === "binary") console.debug(TAG, "decode skip", e.message);
+      if (msg.kind === "binary") console.debug(TAG, "ingest skip", e.message);
     }
   }
 

@@ -44,7 +44,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["src/*", "vendor/*", "icons/*", "assets/*"],
+      "resources": ["src/*", "vendor/*", "icons/*", "assets/*", "catan-interface/*"],
       "matches": ["https://colonist.io/*", "https://www.colonist.io/*"]
     }
   ]

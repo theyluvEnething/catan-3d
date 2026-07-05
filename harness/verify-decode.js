@@ -3,7 +3,7 @@
 //
 //   node harness/verify-decode.js [framesDir]
 import { decode as refDecode } from "@msgpack/msgpack";
-import { msgpackDecode, decodeFrame, decodeOutgoing, msgpackEncode } from "../extension/src/protocol/decode.js";
+import { msgpackDecode, decodeFrame, decodeOutgoing, msgpackEncode } from "../extension/catan-interface/index.js";
 import fs from "node:fs";
 import path from "node:path";
 

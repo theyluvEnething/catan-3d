@@ -16,8 +16,13 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXT_SRC = path.resolve(__dirname, "..", "extension", "src");
+const ENGINE_SRC = path.resolve(__dirname, "..", "extension", "catan-interface", "src");
 
 function read(rel) { return fs.readFileSync(path.join(EXT_SRC, rel), "utf8"); }
+// The game logic now lives in the standalone catan-interface engine — read it from there so this
+// injected bundle stays the SINGLE source of truth (no copy). Strip ESM import/export so the
+// concatenated files run as one plain script in the page.
+function readEngine(rel) { return fs.readFileSync(path.join(ENGINE_SRC, rel), "utf8"); }
 
 // Strip ESM export keywords so the source can run as a plain concatenated script in the page.
 function deExport(src) {
@@ -27,17 +32,23 @@ function deExport(src) {
     .replace(/^export\s+const\s+/gm, "const ")
     .replace(/^export\s+\{[^}]*\};?\s*$/gm, "");
 }
+// Strip ESM import lines (the engine files import from siblings; concatenation makes them globals).
+function deImport(src) { return src.replace(/^import\s+.*$/gm, ""); }
+function engineModule(rel) { return deImport(deExport(readEngine(rel))); }
 
 export function buildInitScript() {
-  const decode = deExport(read("protocol/decode.js"));
-  const gameState = deExport(read("state/gameState.js"));
+  // Protocol: decode + encode + frames (the engine split decode.js into these three).
+  const decode = engineModule("protocol/decode.js");
+  const encode = engineModule("protocol/encode.js");
+  const frames = engineModule("protocol/frames.js");
+  const gameState = engineModule("state/gameState.js");
+  const watchdog = engineModule("state/watchdog.js");
+  const boardGeom = engineModule("domain/boardGeometry.js");
+  const legal = engineModule("domain/legal.js");
+  // HUD stays in the extension (UI, not part of the engine).
   const hud = deExport(read("render/hud.js"));
-  // Pure geometry + legal-move logic (no three.js) — strip their cross-imports too.
-  const boardGeom = deExport(read("render/boardGeometry.js"));
-  const legal = deExport(read("interact/legal.js")).replace(/^import\s+.*$/gm, "");
-  const watchdog = deExport(read("state/watchdog.js")).replace(/^import\s+.*$/gm, "");
 
-  // Assemble a single IIFE. Order matters: decode -> gameState -> hud -> glue.
+  // Assemble a single IIFE. Order matters: protocol -> enums -> geometry -> legal -> state -> glue.
   return `
 (() => {
   "use strict";
@@ -45,17 +56,23 @@ export function buildInitScript() {
   try { if (window.top !== window.self) return; } catch { return; }
   if (window.__catan3d && window.__catan3d.__installed) return;
 
-  // ---- decode.js ----
+  // ---- protocol: decode.js ----
   ${decode}
 
-  // ---- gameState.js ----
-  ${gameState}
+  // ---- protocol: encode.js ----
+  ${encode}
+
+  // ---- protocol: frames.js (decodeFrame / decodeOutgoing / encodeChannel) ----
+  ${frames}
 
   // ---- boardGeometry.js (pure) ----
   ${boardGeom}
 
   // ---- legal.js (pure) ----
   ${legal}
+
+  // ---- gameState.js ----
+  ${gameState}
 
   // ---- watchdog.js (pure) ----
   ${watchdog}
