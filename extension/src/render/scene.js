@@ -13,6 +13,7 @@ import * as THREE from "../../vendor/three.module.js";
 import { OrbitControls } from "../../vendor/OrbitControls.js";
 import { hexCenter, hexCorners, cornerPosExact, edgePos, edgeCorners } from "./boardGeometry.js";
 import { makeTileMaterial, RESOURCE, makeNumberTexture, makeWaterMaterial, makeSandMaterial, playerColor } from "./materials.js";
+import { loadModels, makeModel } from "./models.js";
 
 const HEX_R = 1;           // hex circumradius in world units
 const HEX_H = 0.28;        // hex prism extrude depth
@@ -98,8 +99,33 @@ export class BoardScene {
     this.board.scale.setScalar(BOARD_SCALE);
     scene.add(this.board);
 
+    // Load the Blender GLB meshes once. When they arrive, rebuild tiles + pieces so the nicer
+    // models replace the procedural fallbacks. Until then everything renders procedurally.
+    loadModels().then((geo) => {
+      if (!geo) return;                 // load failed → keep procedural meshes
+      this._modelsReady = true;
+      if (this._lastState) {
+        // Rebuild the static board (tiles) and re-sync pieces against the loaded models.
+        this._rebuildAll(this._lastState);
+      }
+    });
+
     this._animate = this._animate.bind(this);
     this._raf = requestAnimationFrame(this._animate);
+  }
+
+  /**
+   * Swap tiles + pieces to the GLB models once they load. Only re-does tile meshes and pieces
+   * (ports/cactus are procedural regardless, so we leave those in place). Re-adds tiles via
+   * _addTile (which now uses the GLB HexTile) and lets syncPieces rebuild pieces.
+   */
+  _rebuildAll(state) {
+    for (const m of this.tileMeshes.values()) this.board.remove(m);
+    for (const m of this.numberMeshes.values()) this.board.remove(m);
+    for (const m of this.pieceMeshes.values()) this.board.remove(m);
+    this.tileMeshes.clear(); this.numberMeshes.clear(); this.pieceMeshes.clear();
+    for (const hex of state.hexes) this._addTile(hex);
+    this.syncPieces(state);
   }
 
   _setupLights() {
@@ -155,6 +181,7 @@ export class BoardScene {
 
   /** Build the static board (tiles, numbers, ports, water) from the first snapshot. */
   buildBoard(state) {
+    this._lastState = state;
     if (this._built) return;
     const hexes = state.hexes;
     if (!hexes.length) return;
@@ -169,9 +196,9 @@ export class BoardScene {
   _addTile(hex) {
     const { u, v } = hexCenter(hex.x, hex.y);
     const [x, z] = this._toWorld(u, v);
-    const geo = hexPrismGeometry(HEX_R * 0.98, HEX_H, HEX_BEVEL);
     const mat = makeTileMaterial(hex.type);
-    const mesh = new THREE.Mesh(geo, mat);
+    // Prefer the Blender GLB hex (nicer bevels + domed top); fall back to the procedural prism.
+    const mesh = makeModel("HexTile", mat) || new THREE.Mesh(hexPrismGeometry(HEX_R * 0.98, HEX_H, HEX_BEVEL), mat);
     mesh.position.set(x, 0, z);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
@@ -207,18 +234,20 @@ export class BoardScene {
   _makeNumberToken(n) {
     const isHot = n === 6 || n === 8;
     const R = 0.36;
-    const disc = new THREE.Mesh(
-      new THREE.CylinderGeometry(R, R, 0.08, 48),
-      new THREE.MeshStandardMaterial({ color: 0xf5edd6, roughness: 0.8, metalness: 0 })
-    );
-    disc.castShadow = true; disc.receiveShadow = true;
+    const discMat = new THREE.MeshStandardMaterial({ color: 0xf5edd6, roughness: 0.8, metalness: 0 });
+    // Prefer the GLB Token disc (beveled edge); fall back to a plain cylinder. Its top sits ~0.04
+    // above y=0 (origin at base-center), so place the number face just above that.
+    const model = makeModel("Token", discMat);
+    const disc = model || new THREE.Mesh(new THREE.CylinderGeometry(R, R, 0.08, 48), discMat);
+    if (!model) { disc.castShadow = true; disc.receiveShadow = true; }
+    const faceY = model ? 0.085 : 0.041;
     const tex = makeNumberTexture(n, isHot);
     const face = new THREE.Mesh(
       new THREE.CircleGeometry(R - 0.015, 48),
       new THREE.MeshStandardMaterial({ map: tex, roughness: 0.55, transparent: true, polygonOffset: true, polygonOffsetFactor: -2 })
     );
     face.rotation.x = -Math.PI / 2;
-    face.position.y = 0.041;
+    face.position.y = faceY;
     const g = new THREE.Group(); g.add(disc); g.add(face);
     return g;
   }
@@ -254,6 +283,7 @@ export class BoardScene {
 
   /** Reconcile all pieces from current state — adds new, updates changed, removes gone. */
   syncPieces(state) {
+    this._lastState = state;
     if (!this._built) this.buildBoard(state);
     if (!this._built) return;
     const seen = new Set();
@@ -315,9 +345,12 @@ export class BoardScene {
   }
 
   _makeSettlement(color) {
-    const g = new THREE.Group();
     const col = playerColor(color);
     const wall = new THREE.MeshStandardMaterial({ color: col, roughness: 0.4, metalness: 0.05 });
+    const model = makeModel("Settlement", wall);
+    if (model) return model;
+    // procedural fallback
+    const g = new THREE.Group();
     const roofMat = new THREE.MeshStandardMaterial({ color: darken(col, 0.68), roughness: 0.5 });
     const body = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.28, 0.34), wall);
     body.position.y = 0.14; body.castShadow = true; body.receiveShadow = true;
@@ -327,9 +360,12 @@ export class BoardScene {
     return g;
   }
   _makeCity(color) {
-    const g = new THREE.Group();
     const col = playerColor(color);
     const wall = new THREE.MeshStandardMaterial({ color: col, roughness: 0.38, metalness: 0.08 });
+    const model = makeModel("City", wall);
+    if (model) return model;
+    // procedural fallback
+    const g = new THREE.Group();
     const roofMat = new THREE.MeshStandardMaterial({ color: darken(col, 0.62), roughness: 0.5 });
     const base = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.3, 0.4), wall); base.position.set(-0.06, 0.15, 0); base.castShadow = true; base.receiveShadow = true;
     const tower = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.46, 0.32), wall); tower.position.set(0.18, 0.38, 0); tower.castShadow = true;
@@ -346,21 +382,29 @@ export class BoardScene {
     const mx = (ax + bx) / 2, mz = (az + bz) / 2;
     const len = Math.hypot(bx - ax, bz - az);
     const col = playerColor(edge.owner);
-    const h = 0.12;
-    const bar = new THREE.Mesh(
-      new THREE.BoxGeometry(len * 0.8, h, 0.15),
-      new THREE.MeshStandardMaterial({ color: col, roughness: 0.42, metalness: 0.06 })
-    );
-    bar.position.y = h / 2; bar.castShadow = true; bar.receiveShadow = true;
+    const mat = new THREE.MeshStandardMaterial({ color: col, roughness: 0.42, metalness: 0.06 });
     const grp = new THREE.Group();
-    grp.add(bar);
+    // Prefer the GLB Road (unit-length bar along X, base at y=0): scale X to the edge length.
+    const model = makeModel("Road", mat);
+    if (model) {
+      model.scale.x = len * 0.82;
+      grp.add(model);
+    } else {
+      const h = 0.12;
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(len * 0.8, h, 0.15), mat);
+      bar.position.y = h / 2; bar.castShadow = true; bar.receiveShadow = true;
+      grp.add(bar);
+    }
     grp.position.set(mx, TILE_TOP + 0.005, mz);
     grp.rotation.y = -Math.atan2(bz - az, bx - ax);
     return grp;
   }
   _makeRobber() {
-    const g = new THREE.Group();
     const mat = new THREE.MeshStandardMaterial({ color: 0x26262b, roughness: 0.55, metalness: 0.25 });
+    const model = makeModel("Robber", mat);
+    if (model) return model;
+    // procedural fallback
+    const g = new THREE.Group();
     const base = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.26, 0.22, 24), mat); base.position.y = 0.11; base.castShadow = true;
     const body = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.2, 0.38, 24), mat); body.position.y = 0.4; body.castShadow = true;
     const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 24, 18), mat); head.position.y = 0.68; head.castShadow = true;
